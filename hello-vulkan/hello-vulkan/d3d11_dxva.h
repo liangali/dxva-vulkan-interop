@@ -6,8 +6,9 @@
 #include <stdio.h>
 #include <stdint.h>
 #include <windows.h>
-#include <D3D11.h>
 #include <dxva.h>
+#include <d3d11.h>
+#include <dxgi1_6.h>
 
 #define CHECK_FAIL_EXIT(hr, msg) \
     if (!SUCCEEDED(hr)) { printf("ERROR: Failed to call %s\n exit", msg); exit(-1); }
@@ -38,10 +39,12 @@ public:
     ~D3d11Dxva();
 
     int init();
-    int execute(); // for test purpose
+    int execute();
     int destory();
 
     ID3D11Texture2D* getTexture2D();
+    IDXGIResource1* getDXGIResource();
+    HANDLE getSharedHandle();
 
     ID3D11Device* d3d11Device() {
         return pD3D11Device_;
@@ -57,12 +60,11 @@ private:
 
     int decodeFrame();
     int processFrame();
+    int copySurface();
 
     int getDecTexture2D(ID3D11Texture2D* & tex, uint32_t& w, uint32_t& h, DXGI_FORMAT& fmt);
     int getVppTexture2D(ID3D11Texture2D* & tex, uint32_t& w, uint32_t& h, DXGI_FORMAT& fmt);
-
-    int dumpDecodeOutput();
-    int dumpVppOutput();
+    int dumpSurfaceToFile(ID3D11Texture2D* surf, uint32_t w, uint32_t h, DXGI_FORMAT fmt);
 
 private:
     uint32_t shortFormat_ = 0;
@@ -91,4 +93,7 @@ private:
     ID3D11Texture2D * pSurfaceVppOut_ = nullptr;
     ID3D11VideoProcessorInputView *pVppInputView_ = nullptr;
     ID3D11VideoProcessorOutputView *pVppOutputView_ = nullptr;
+
+    ID3D11Texture2D * pSurfaceCopyDst_ = nullptr;
+    bool executed_ = false;
 };
