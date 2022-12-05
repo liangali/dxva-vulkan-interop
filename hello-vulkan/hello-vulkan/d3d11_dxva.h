@@ -35,7 +35,7 @@ class D3d11Dxva
 {
 public:
     D3d11Dxva();
-    D3d11Dxva(uint32_t w, uint32_t h, DXGI_FORMAT fmt= DXGI_FORMAT_B8G8R8A8_UNORM);
+    D3d11Dxva(uint32_t w, uint32_t h, DXGI_FORMAT fmt = DXGI_FORMAT_B8G8R8A8_UNORM);
     ~D3d11Dxva();
 
     int init();
@@ -64,7 +64,7 @@ private:
 
     int getDecTexture2D(ID3D11Texture2D* & tex, uint32_t& w, uint32_t& h, DXGI_FORMAT& fmt);
     int getVppTexture2D(ID3D11Texture2D* & tex, uint32_t& w, uint32_t& h, DXGI_FORMAT& fmt);
-    int dumpSurfaceToFile(ID3D11Texture2D* surf, uint32_t w, uint32_t h, DXGI_FORMAT fmt);
+    int dumpSurfaceToFile(ID3D11Texture2D* surf, uint32_t w, uint32_t h, DXGI_FORMAT fmt, const char* tag = "", bool sync = false);
 
 private:
     uint32_t shortFormat_ = 0;
@@ -94,6 +94,11 @@ private:
     ID3D11VideoProcessorInputView *pVppInputView_ = nullptr;
     ID3D11VideoProcessorOutputView *pVppOutputView_ = nullptr;
 
+    IDXGIKeyedMutex *pDXGIKeyedMutex_ = nullptr;
+
     ID3D11Texture2D * pSurfaceCopyDst_ = nullptr;
+    uint32_t copyWidth_ = 0;
+    uint32_t copyHeight_ = 0;
+    DXGI_FORMAT copyFormat_ = DXGI_FORMAT_UNKNOWN;
     bool executed_ = false;
 };

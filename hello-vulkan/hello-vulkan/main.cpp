@@ -1,3 +1,5 @@
+#define VK_USE_PLATFORM_WIN32_KHR
+
 #define GLFW_INCLUDE_VULKAN
 #include <GLFW/glfw3.h>
 
@@ -22,6 +24,9 @@
 #include <optional>
 #include <set>
 
+#define NOMINMAX
+#include "d3d11_dxva.h"
+
 const uint32_t WIDTH = 800;
 const uint32_t HEIGHT = 600;
 
@@ -38,7 +43,7 @@ const std::vector<const char*> deviceExtensions = {
 #ifdef NDEBUG
 const bool enableValidationLayers = false;
 #else
-const bool enableValidationLayers = true;
+const bool enableValidationLayers = false;
 #endif
 
 VkResult CreateDebugUtilsMessengerEXT(VkInstance instance, const VkDebugUtilsMessengerCreateInfoEXT* pCreateInfo, const VkAllocationCallbacks* pAllocator, VkDebugUtilsMessengerEXT* pDebugMessenger) {
@@ -184,6 +189,9 @@ private:
     std::vector<VkSemaphore> renderFinishedSemaphores;
     std::vector<VkFence> inFlightFences;
     uint32_t currentFrame = 0;
+
+    const bool enableSharing = true;
+    VkFormat vkFmt = (enableSharing) ? VK_FORMAT_R8G8B8A8_UNORM : VK_FORMAT_R8G8B8A8_SRGB;
 
     bool framebufferResized = false;
 
@@ -747,18 +755,27 @@ private:
 
         stbi_image_free(pixels);
 
-        createImage(texWidth, texHeight, VK_FORMAT_R8G8B8A8_SRGB, VK_IMAGE_TILING_OPTIMAL, VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_SAMPLED_BIT, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, textureImage, textureImageMemory);
-
-        transitionImageLayout(textureImage, VK_FORMAT_R8G8B8A8_SRGB, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL);
-        copyBufferToImage(stagingBuffer, textureImage, static_cast<uint32_t>(texWidth), static_cast<uint32_t>(texHeight));
-        transitionImageLayout(textureImage, VK_FORMAT_R8G8B8A8_SRGB, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+        if (!enableSharing)
+        {
+            createImage(texWidth, texHeight, vkFmt, VK_IMAGE_TILING_OPTIMAL, VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_SAMPLED_BIT, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, textureImage, textureImageMemory);
+            transitionImageLayout(textureImage, vkFmt, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL);
+            copyBufferToImage(stagingBuffer, textureImage, static_cast<uint32_t>(texWidth), static_cast<uint32_t>(texHeight));
+            transitionImageLayout(textureImage, vkFmt, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+        } 
+        else
+        {
+            createImageFromD3d11(texWidth, texHeight, vkFmt, VK_IMAGE_TILING_OPTIMAL, VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_SAMPLED_BIT, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, textureImage, textureImageMemory);
+            transitionImageLayout(textureImage, vkFmt, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL);
+            //copyBufferToImage(stagingBuffer, textureImage, static_cast<uint32_t>(texWidth), static_cast<uint32_t>(texHeight));
+            transitionImageLayout(textureImage, vkFmt, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+        }
 
         vkDestroyBuffer(device, stagingBuffer, nullptr);
         vkFreeMemory(device, stagingBufferMemory, nullptr);
     }
 
     void createTextureImageView() {
-        textureImageView = createImageView(textureImage, VK_FORMAT_R8G8B8A8_SRGB);
+        textureImageView = createImageView(textureImage, vkFmt);
     }
 
     void createTextureSampler() {
@@ -838,6 +855,87 @@ private:
         }
 
         vkBindImageMemory(device, image, imageMemory, 0);
+    }
+
+    void createImageFromD3d11(uint32_t width, uint32_t height, VkFormat format, VkImageTiling tiling, VkImageUsageFlags usage, VkMemoryPropertyFlags properties, VkImage& image, VkDeviceMemory& imageMemory)
+    {
+        DXGI_FORMAT dxgiFormat = DXGI_FORMAT_R8G8B8A8_UNORM;
+        D3d11Dxva* dxvactx = new D3d11Dxva(width, height, dxgiFormat);
+        HANDLE sharedHandle = 0;
+        dxvactx->init();
+        dxvactx->execute();
+        sharedHandle = dxvactx->getSharedHandle();
+
+        VkPhysicalDeviceExternalImageFormatInfo extImgFmtInfo = { VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_EXTERNAL_IMAGE_FORMAT_INFO };
+        extImgFmtInfo.handleType = VK_EXTERNAL_MEMORY_HANDLE_TYPE_D3D11_TEXTURE_BIT;
+        VkPhysicalDeviceImageFormatInfo2 imgFmtInfo2 = { VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_IMAGE_FORMAT_INFO_2 };
+        imgFmtInfo2.pNext = &extImgFmtInfo;
+        imgFmtInfo2.format = format;
+        imgFmtInfo2.type = VK_IMAGE_TYPE_2D;
+        imgFmtInfo2.tiling = tiling;
+        imgFmtInfo2.usage = usage;
+        VkExternalImageFormatProperties extImgFmtProps = { VK_STRUCTURE_TYPE_EXTERNAL_IMAGE_FORMAT_PROPERTIES };
+        VkImageFormatProperties2 ImageFormatProperties2 = { VK_STRUCTURE_TYPE_IMAGE_FORMAT_PROPERTIES_2 };
+        ImageFormatProperties2.pNext = &extImgFmtProps;
+        if (vkGetPhysicalDeviceImageFormatProperties2(physicalDevice, &imgFmtInfo2, &ImageFormatProperties2) != VK_SUCCESS) {
+            throw std::runtime_error("failed to vkGetPhysicalDeviceImageFormatProperties2!");
+        }
+        assert(extImgFmtProps.externalMemoryProperties.externalMemoryFeatures & VK_EXTERNAL_MEMORY_FEATURE_DEDICATED_ONLY_BIT);
+        assert(extImgFmtProps.externalMemoryProperties.externalMemoryFeatures & VK_EXTERNAL_MEMORY_FEATURE_IMPORTABLE_BIT);
+        assert(extImgFmtProps.externalMemoryProperties.compatibleHandleTypes & VK_EXTERNAL_MEMORY_HANDLE_TYPE_D3D11_TEXTURE_BIT);
+
+        VkExternalMemoryImageCreateInfo extImgCreateInfo = { VK_STRUCTURE_TYPE_EXTERNAL_MEMORY_IMAGE_CREATE_INFO };
+        extImgCreateInfo.handleTypes = VK_EXTERNAL_MEMORY_HANDLE_TYPE_D3D11_TEXTURE_BIT;
+        VkImageCreateInfo imageInfo{};
+        imageInfo.pNext = &extImgCreateInfo;
+        imageInfo.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO;
+        imageInfo.imageType = VK_IMAGE_TYPE_2D;
+        imageInfo.extent.width = width;
+        imageInfo.extent.height = height;
+        imageInfo.extent.depth = 1;
+        imageInfo.mipLevels = 1;
+        imageInfo.arrayLayers = 1;
+        imageInfo.format = vkFmt;
+        imageInfo.tiling = VK_IMAGE_TILING_OPTIMAL;
+        imageInfo.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+        imageInfo.usage = VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_SAMPLED_BIT;
+        imageInfo.samples = VK_SAMPLE_COUNT_1_BIT;
+        imageInfo.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
+        if (vkCreateImage(device, &imageInfo, nullptr, &image) != VK_SUCCESS) {
+            throw std::runtime_error("failed to create image!");
+        }
+
+        VkMemoryDedicatedRequirements memReqs = { VK_STRUCTURE_TYPE_MEMORY_DEDICATED_REQUIREMENTS };
+        VkMemoryRequirements2 memReq2 = { VK_STRUCTURE_TYPE_MEMORY_REQUIREMENTS_2 };
+        memReq2.pNext = &memReqs;
+        VkImagePlaneMemoryRequirementsInfo memReqInfo = { VK_STRUCTURE_TYPE_IMAGE_PLANE_MEMORY_REQUIREMENTS_INFO };
+        VkImageMemoryRequirementsInfo2 memReqInfo2 = { VK_STRUCTURE_TYPE_IMAGE_MEMORY_REQUIREMENTS_INFO_2 };
+        memReqInfo2.image = image;
+        memReqInfo2.pNext = &memReqInfo;
+        vkGetImageMemoryRequirements2(device, &memReqInfo2, &memReq2);
+
+        VkMemoryDedicatedAllocateInfo allocInfo = { VK_STRUCTURE_TYPE_MEMORY_DEDICATED_ALLOCATE_INFO };
+        allocInfo.image = image;
+        VkImportMemoryWin32HandleInfoKHR importHandleInfo = { VK_STRUCTURE_TYPE_IMPORT_MEMORY_WIN32_HANDLE_INFO_KHR };
+        importHandleInfo.pNext = &allocInfo;
+        importHandleInfo.handleType = VK_EXTERNAL_MEMORY_HANDLE_TYPE_D3D11_TEXTURE_BIT;
+        importHandleInfo.handle = sharedHandle;
+        VkMemoryAllocateInfo memAllocInfo = { VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO };
+        memAllocInfo.pNext = &importHandleInfo;
+        memAllocInfo.allocationSize = memReq2.memoryRequirements.size;
+        VkDeviceMemory ImageMemory = {};
+        if (vkAllocateMemory(device, &memAllocInfo, nullptr, &ImageMemory) != VK_SUCCESS) {
+            throw std::runtime_error("failed to allocate memory!");
+        }
+
+        VkBindImageMemoryInfo bindMemInfo = { VK_STRUCTURE_TYPE_BIND_IMAGE_MEMORY_INFO };
+        bindMemInfo.image = image;
+        bindMemInfo.memory = ImageMemory;
+        if (vkBindImageMemory2(device, 1, &bindMemInfo) != VK_SUCCESS) {
+            throw std::runtime_error("failed to bind image memory!");
+        }
+
+        printf("INFO: %s: createImageFromD3d11 \n", __FUNCTION__);
     }
 
     void transitionImageLayout(VkImage image, VkFormat format, VkImageLayout oldLayout, VkImageLayout newLayout) {

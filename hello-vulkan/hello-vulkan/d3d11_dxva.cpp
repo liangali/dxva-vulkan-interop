@@ -331,9 +331,13 @@ D3d11Dxva::D3d11Dxva()
     decHeight_ = g_dxvaDataAVC_Short.picHeight;
     decFormat_ = DXGI_FORMAT_NV12;
 
-    vppWidth_ = decWidth_;
-    vppHeight_ = decHeight_;
-    vppFormat_ = DXGI_FORMAT_B8G8R8A8_UNORM;
+    vppWidth_ = 512;
+    vppHeight_ = 512;
+    vppFormat_ = DXGI_FORMAT_R8G8B8A8_UNORM;
+
+    copyWidth_ = vppWidth_;
+    copyHeight_ = vppHeight_;
+    copyFormat_ = DXGI_FORMAT_R8G8B8A8_UNORM;
 }
 
 D3d11Dxva::D3d11Dxva(uint32_t w, uint32_t h, DXGI_FORMAT fmt)
@@ -349,6 +353,10 @@ D3d11Dxva::D3d11Dxva(uint32_t w, uint32_t h, DXGI_FORMAT fmt)
     vppWidth_ = w;
     vppHeight_ = h;
     vppFormat_ = fmt;
+
+    copyWidth_ = w;
+    copyHeight_ = h;
+    copyFormat_ = fmt;
 }
 
 D3d11Dxva::~D3d11Dxva()
@@ -360,7 +368,11 @@ int D3d11Dxva::init()
     HRESULT hr = S_OK;
     D3D_FEATURE_LEVEL fl{};
     D3D_FEATURE_LEVEL levels[] = { D3D_FEATURE_LEVEL_11_1 };
-    hr = D3D11CreateDevice(nullptr, D3D_DRIVER_TYPE_HARDWARE, nullptr, 0, levels, 1, D3D11_SDK_VERSION, &pD3D11Device_, &fl, &pDeviceContext_);
+    UINT creationFlags = 0;
+#if defined(_DEBUG)
+    creationFlags |= D3D11_CREATE_DEVICE_DEBUG;
+#endif
+    hr = D3D11CreateDevice(nullptr, D3D_DRIVER_TYPE_HARDWARE, nullptr, creationFlags, levels, 1, D3D11_SDK_VERSION, &pD3D11Device_, &fl, &pDeviceContext_);
     CHECK_FAIL_EXIT(hr, "D3D11CreateDevice");
 
     hr = pD3D11Device_->QueryInterface(&pVideoDevice_);
@@ -428,7 +440,7 @@ int D3d11Dxva::init()
     vppOutDesc.Usage = D3D11_USAGE_DEFAULT; // D3D11_USAGE 
     vppOutDesc.BindFlags = D3D11_BIND_RENDER_TARGET; //D3D11_BIND_RENDER_TARGET | D3D10_BIND_SHADER_RESOURCE;
     vppOutDesc.CPUAccessFlags = 0;
-    vppOutDesc.MiscFlags = D3D11_RESOURCE_MISC_SHARED; //D3D11_RESOURCE_MISC_SHARED_NTHANDLE | D3D11_RESOURCE_MISC_SHARED_KEYEDMUTEX;
+    vppOutDesc.MiscFlags = (1) ? D3D11_RESOURCE_MISC_SHARED : D3D11_RESOURCE_MISC_SHARED_NTHANDLE | D3D11_RESOURCE_MISC_SHARED_KEYEDMUTEX;
     hr = pD3D11Device_->CreateTexture2D(&vppOutDesc, NULL, &pSurfaceVppOut_);
     CHECK_FAIL_EXIT(hr, "CreateTexture2D");
 
@@ -439,18 +451,21 @@ int D3d11Dxva::init()
     CHECK_FAIL_EXIT(hr, "CreateVideoProcessorOutputView");
 
     D3D11_TEXTURE2D_DESC copyDstDesc = {};
-    copyDstDesc.Width = vppWidth_;
-    copyDstDesc.Height = vppHeight_;
+    copyDstDesc.Width = copyWidth_;
+    copyDstDesc.Height = copyHeight_;
     copyDstDesc.MipLevels = 1;
     copyDstDesc.ArraySize = 1;
-    copyDstDesc.Format = vppFormat_;
+    copyDstDesc.Format = copyFormat_;
     copyDstDesc.SampleDesc = { 1, 0 }; // DXGI_SAMPLE_DESC 
     copyDstDesc.Usage = D3D11_USAGE_DEFAULT; // D3D11_USAGE 
-    copyDstDesc.BindFlags = D3D10_BIND_SHADER_RESOURCE;
+    copyDstDesc.BindFlags = D3D11_BIND_RENDER_TARGET;
     copyDstDesc.CPUAccessFlags = 0;
-    copyDstDesc.MiscFlags = D3D11_RESOURCE_MISC_SHARED_NTHANDLE | D3D11_RESOURCE_MISC_SHARED_KEYEDMUTEX;
+    copyDstDesc.MiscFlags = (0) ? D3D11_RESOURCE_MISC_SHARED : D3D11_RESOURCE_MISC_SHARED_NTHANDLE | D3D11_RESOURCE_MISC_SHARED_KEYEDMUTEX;
     hr = pD3D11Device_->CreateTexture2D(&copyDstDesc, NULL, &pSurfaceCopyDst_);
     CHECK_FAIL_EXIT(hr, "CreateTexture2D");
+
+    hr = pSurfaceCopyDst_->QueryInterface(__uuidof(IDXGIKeyedMutex), (LPVOID*)&pDXGIKeyedMutex_);
+    CHECK_FAIL_EXIT(hr, "QueryInterface IDXGIKeyedMutex");
 
     return 0;
 }
@@ -485,35 +500,34 @@ int D3d11Dxva::execute()
     printProfiles();
     queryFormats();
 
-    if (!executed_)
+    ret = decodeFrame();
+    if (ret != 0)
     {
-        ret = decodeFrame();
-        if (ret != 0)
-        {
-            printf("ERROR: DXVA decodeFrame failed!\n");
-            return ret;
-        }
-
-        ret = processFrame();
-        if (ret != 0)
-        {
-            printf("ERROR: DXVA processFrame failed!\n");
-            return ret;
-        }
-
-        ret = copySurface();
-        if (ret != 0)
-        {
-            printf("ERROR: DXVA processFrame failed!\n");
-            return ret;
-        }
-
-        executed_ = true;
-
-        dumpSurfaceToFile(pSurfaceDecodeNV12_, decWidth_, decHeight_, decFormat_);
-        //dumpSurfaceToFile(pSurfaceVppOut_, vppWidth_, vppHeight_, vppFormat_);
-        dumpSurfaceToFile(pSurfaceCopyDst_, vppWidth_, vppHeight_, vppFormat_);
+        printf("ERROR: DXVA decodeFrame failed!\n");
+        return ret;
     }
+
+    //dumpSurfaceToFile(pSurfaceDecodeNV12_, decWidth_, decHeight_, decFormat_, "dec");
+
+    ret = processFrame();
+    if (ret != 0)
+    {
+        printf("ERROR: DXVA processFrame failed!\n");
+        return ret;
+    }
+
+    //dumpSurfaceToFile(pSurfaceVppOut_, vppWidth_, vppHeight_, vppFormat_, "vpp");
+
+    ret = copySurface();
+    if (ret != 0)
+    {
+        printf("ERROR: DXVA processFrame failed!\n");
+        return ret;
+    }
+
+    //dumpSurfaceToFile(pSurfaceCopyDst_, copyWidth_, copyHeight_, copyFormat_, "copy", true);
+
+    executed_ = true;
 
     return 0;
 }
@@ -563,11 +577,6 @@ void D3d11Dxva::queryFormats()
 
 ID3D11Texture2D* D3d11Dxva::getTexture2D()
 {
-    if (!executed_)
-    {
-        execute();
-    }
-
     return pSurfaceCopyDst_;
 }
 
@@ -626,7 +635,7 @@ int D3d11Dxva::getVppTexture2D(ID3D11Texture2D* & tex, uint32_t& w, uint32_t& h,
         return -1;
     }
 
-    processFrame();
+    ret = processFrame();
     if (ret != 0)
     {
         printf("ERROR: DXVA processFrame failed!\n");
@@ -696,20 +705,25 @@ int D3d11Dxva::processFrame()
 int D3d11Dxva::copySurface()
 {
     HRESULT hr = S_OK;
+
     D3D11_BOX box = {};
     box.left = 0;
-    box.right = vppWidth_;
+    box.right = copyWidth_;
     box.top = 0;
-    box.bottom = vppHeight_;
+    box.bottom = copyHeight_;
     box.front = 0;
     box.back = 1;
 
+    pDXGIKeyedMutex_->AcquireSync(0, 1000);
     pDeviceContext_->CopySubresourceRegion(pSurfaceCopyDst_, 0, 0, 0, 0, pSurfaceVppOut_, 0, &box);
+    pDXGIKeyedMutex_->ReleaseSync(1);
+
+    //pDeviceContext_->CopyResource(pSurfaceCopyDst_, pSurfaceVppOut_);
 
     return 0;
 }
 
-int D3d11Dxva::dumpSurfaceToFile(ID3D11Texture2D* surf, uint32_t w, uint32_t h, DXGI_FORMAT fmt)
+int D3d11Dxva::dumpSurfaceToFile(ID3D11Texture2D* surf, uint32_t w, uint32_t h, DXGI_FORMAT fmt, const char* tag, bool sync)
 {
     HRESULT hr = S_OK;
     D3D11_BOX box = {};
@@ -735,7 +749,18 @@ int D3d11Dxva::dumpSurfaceToFile(ID3D11Texture2D* surf, uint32_t w, uint32_t h, 
     hr = pD3D11Device_->CreateTexture2D(&descStaging, NULL, &pSurfaceCopyStaging);
     CHECK_FAIL_EXIT(hr, "CreateTexture2D");
 
+    if (sync)
+    {
+        pDXGIKeyedMutex_->AcquireSync(1, 1000);
+    }
+    
     pDeviceContext_->CopySubresourceRegion(pSurfaceCopyStaging, 0, 0, 0, 0, surf, 0, &box);
+
+    if (sync)
+    {
+        pDXGIKeyedMutex_->ReleaseSync(0);
+    }
+
     D3D11_MAPPED_SUBRESOURCE subRes = {};
 
     hr = pDeviceContext_->Map(pSurfaceCopyStaging, 0, D3D11_MAP_READ, 0, &subRes);
@@ -749,7 +774,7 @@ int D3d11Dxva::dumpSurfaceToFile(ID3D11Texture2D* surf, uint32_t w, uint32_t h, 
     switch (fmt)
     {
     case DXGI_FORMAT_NV12:
-        sprintf_s(fileName, 256, "out_%dx%d_nv12.yuv", w, h);
+        sprintf_s(fileName, 256, "out_%s_%dx%d_nv12.yuv", tag, w, h);
         bufSize = w * h * 3 / 2; 
         tmpBuf.resize(bufSize);
         for (size_t i = 0; i < h*3/2; i++)
@@ -761,8 +786,19 @@ int D3d11Dxva::dumpSurfaceToFile(ID3D11Texture2D* surf, uint32_t w, uint32_t h, 
         fclose(fp);
         break;
     case DXGI_FORMAT_B8G8R8A8_UNORM:
+        sprintf_s(fileName, 256, "out_%s_%dx%d_bgra.yuv", tag, w, h);
+        bufSize = w * 4 * h;
+        tmpBuf.resize(bufSize);
+        for (size_t i = 0; i < h; i++)
+        {
+            memcpy_s(tmpBuf.data() + i * w * 4, w * 4, ((char*)subRes.pData + i * subRes.RowPitch), w * 4);
+        }
+        fopen_s(&fp, fileName, "wb");
+        fwrite(tmpBuf.data(), bufSize, 1, fp);
+        fclose(fp);
+        break;
     case DXGI_FORMAT_R8G8B8A8_UNORM:
-        sprintf_s(fileName, 256, "out_%dx%d_argb.yuv", w, h);
+        sprintf_s(fileName, 256, "out_%s_%dx%d_rgba.yuv", tag, w, h);
         bufSize = w * 4 * h;
         tmpBuf.resize(bufSize);
         for (size_t i = 0; i < h; i++)
