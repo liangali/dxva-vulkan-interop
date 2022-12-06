@@ -195,6 +195,9 @@ private:
 
     bool framebufferResized = false;
 
+    D3d11Dxva* dxvactx_ = nullptr;
+    HANDLE sharedHandle_ = 0;
+
     void initWindow() {
         glfwInit();
 
@@ -300,6 +303,8 @@ private:
 
         vkDestroySurfaceKHR(instance, surface, nullptr);
         vkDestroyInstance(instance, nullptr);
+
+        dxvactx_->destory();
 
         glfwDestroyWindow(window);
 
@@ -860,11 +865,21 @@ private:
     void createImageFromD3d11(uint32_t width, uint32_t height, VkFormat format, VkImageTiling tiling, VkImageUsageFlags usage, VkMemoryPropertyFlags properties, VkImage& image, VkDeviceMemory& imageMemory)
     {
         DXGI_FORMAT dxgiFormat = DXGI_FORMAT_R8G8B8A8_UNORM;
-        D3d11Dxva* dxvactx = new D3d11Dxva(width, height, dxgiFormat);
-        HANDLE sharedHandle = 0;
-        dxvactx->init();
-        dxvactx->execute();
-        sharedHandle = dxvactx->getSharedHandle();
+        if (!sharedHandle_)
+        {
+            if (!dxvactx_)
+            {
+                dxvactx_ = new D3d11Dxva(width, height, dxgiFormat);
+                dxvactx_->init();
+                dxvactx_->execute();
+                sharedHandle_ = dxvactx_->getSharedHandle();
+                printf("%s: sharedHandle_ = %p\n", __FUNCTION__, sharedHandle_);
+                if (!sharedHandle_)
+                {
+                    printf("ERROR: %s getSharedHandle failed \n", __FUNCTION__);
+                }
+            }
+        }
 
         VkPhysicalDeviceExternalImageFormatInfo extImgFmtInfo = { VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_EXTERNAL_IMAGE_FORMAT_INFO };
         extImgFmtInfo.handleType = VK_EXTERNAL_MEMORY_HANDLE_TYPE_D3D11_TEXTURE_BIT;
@@ -919,7 +934,7 @@ private:
         VkImportMemoryWin32HandleInfoKHR importHandleInfo = { VK_STRUCTURE_TYPE_IMPORT_MEMORY_WIN32_HANDLE_INFO_KHR };
         importHandleInfo.pNext = &allocInfo;
         importHandleInfo.handleType = VK_EXTERNAL_MEMORY_HANDLE_TYPE_D3D11_TEXTURE_BIT;
-        importHandleInfo.handle = sharedHandle;
+        importHandleInfo.handle = sharedHandle_;
         VkMemoryAllocateInfo memAllocInfo = { VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO };
         memAllocInfo.pNext = &importHandleInfo;
         memAllocInfo.allocationSize = memReq2.memoryRequirements.size;
