@@ -375,6 +375,9 @@ int D3d11Dxva::init()
     hr = D3D11CreateDevice(nullptr, D3D_DRIVER_TYPE_HARDWARE, nullptr, creationFlags, levels, 1, D3D11_SDK_VERSION, &pD3D11Device_, &fl, &pDeviceContext_);
     CHECK_FAIL_EXIT(hr, "D3D11CreateDevice");
 
+    hr = pD3D11Device_->QueryInterface(__uuidof (ID3D11Device1), (void **)&pD3D11Device1_);
+    CHECK_FAIL_EXIT(hr, "ID3D11Device1");
+
     hr = pD3D11Device_->QueryInterface(&pVideoDevice_);
     CHECK_FAIL_EXIT(hr, "QueryInterface");
 

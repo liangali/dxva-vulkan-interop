@@ -32,11 +32,26 @@ const uint32_t HEIGHT = 600;
 
 const int MAX_FRAMES_IN_FLIGHT = 2;
 
+#define CHECK_FAIL_EXIT(hr, msg) \
+    if (!SUCCEEDED(hr)) { printf("ERROR: Failed to call %s\n exit", msg); exit(-1); }
+
+#define VK_CHECK_RESULT(f)                                                             \
+{                                                                                      \
+    VkResult res = (f);                                                                \
+    if (res != VK_SUCCESS)                                                             \
+    {                                                                                  \
+        printf("Fatal : VkResult is %d in %s at line %d\n", res,  __FILE__, __LINE__); \
+        assert(res == VK_SUCCESS);                                                     \
+    }                                                                                  \
+}
+
 const std::vector<const char*> validationLayers = {
     "VK_LAYER_KHRONOS_validation"
 };
 
 const std::vector<const char*> deviceExtensions = {
+    VK_KHR_EXTERNAL_SEMAPHORE_EXTENSION_NAME,
+    VK_KHR_EXTERNAL_MEMORY_WIN32_EXTENSION_NAME,
     VK_KHR_SWAPCHAIN_EXTENSION_NAME
 };
 
@@ -199,6 +214,9 @@ private:
 
     bool framebufferResized = false;
 
+    const bool isKMT = 0;
+    VkExternalMemoryHandleTypeFlagBits handleTypeBits = isKMT ? VK_EXTERNAL_MEMORY_HANDLE_TYPE_OPAQUE_WIN32_KMT_BIT : VK_EXTERNAL_MEMORY_HANDLE_TYPE_OPAQUE_WIN32_BIT;
+    VkExternalMemoryHandleTypeFlags handleTypeFlags = handleTypeBits;
 
     void initWindow() {
         glfwInit();
@@ -778,6 +796,8 @@ private:
             createImageFromD3d11(surfaceWidth, surfaceHeight, vkFmt, VK_IMAGE_TILING_OPTIMAL, VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_SAMPLED_BIT, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, textureImage, textureImageMemory);
             transitionImageLayout(textureImage, vkFmt, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL);
             transitionImageLayout(textureImage, vkFmt, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+
+            //shareVkImage2Dd311();
         }
     }
 
@@ -953,6 +973,194 @@ private:
         }
 
         printf("INFO: %s: createImageFromD3d11 \n", __FUNCTION__);
+    }
+
+    void createSharedImage(uint32_t width, uint32_t height, VkFormat format, VkImage& image, VkDeviceMemory& imageMemory)
+    {
+        VkImageCreateInfo imageInfo{};
+        imageInfo.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO;
+        imageInfo.imageType = VK_IMAGE_TYPE_2D;
+        imageInfo.extent.width = width;
+        imageInfo.extent.height = height;
+        imageInfo.extent.depth = 1;
+        imageInfo.mipLevels = 1;
+        imageInfo.arrayLayers = 1;
+        imageInfo.format = format;
+        imageInfo.tiling = VK_IMAGE_TILING_OPTIMAL;
+        imageInfo.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+        imageInfo.usage = VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_SAMPLED_BIT;
+        imageInfo.samples = VK_SAMPLE_COUNT_1_BIT;
+        imageInfo.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
+
+        VkExternalMemoryImageCreateInfo vkExternalMemImageCreateInfo = {};
+        vkExternalMemImageCreateInfo.sType = VK_STRUCTURE_TYPE_EXTERNAL_MEMORY_IMAGE_CREATE_INFO;
+        vkExternalMemImageCreateInfo.pNext = NULL;
+        vkExternalMemImageCreateInfo.handleTypes = handleTypeFlags;
+        imageInfo.pNext = &vkExternalMemImageCreateInfo;
+
+        if (vkCreateImage(device, &imageInfo, nullptr, &image) != VK_SUCCESS) {
+            throw std::runtime_error("failed to create image!");
+        }
+
+        VkMemoryRequirements memRequirements;
+        vkGetImageMemoryRequirements(device, image, &memRequirements);
+
+        //WindowsSecurityAttributes winSecurityAttributes;
+        VkExportMemoryWin32HandleInfoKHR vulkanExportMemoryWin32HandleInfoKHR = {};
+        vulkanExportMemoryWin32HandleInfoKHR.sType = VK_STRUCTURE_TYPE_EXPORT_MEMORY_WIN32_HANDLE_INFO_KHR;
+        vulkanExportMemoryWin32HandleInfoKHR.pNext = NULL;
+        vulkanExportMemoryWin32HandleInfoKHR.pAttributes = nullptr;
+        vulkanExportMemoryWin32HandleInfoKHR.dwAccess = DXGI_SHARED_RESOURCE_READ;// | DXGI_SHARED_RESOURCE_WRITE;
+        vulkanExportMemoryWin32HandleInfoKHR.name = (LPCWSTR)NULL;
+
+        VkExportMemoryAllocateInfoKHR vulkanExportMemoryAllocateInfoKHR = {};
+        vulkanExportMemoryAllocateInfoKHR.sType = VK_STRUCTURE_TYPE_EXPORT_MEMORY_ALLOCATE_INFO_KHR;
+        vulkanExportMemoryAllocateInfoKHR.pNext = &vulkanExportMemoryWin32HandleInfoKHR;
+        vulkanExportMemoryAllocateInfoKHR.handleTypes = handleTypeFlags;
+
+        VkMemoryPropertyFlags properties = VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT;
+        VkMemoryAllocateInfo allocInfo{};
+        allocInfo.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
+        allocInfo.allocationSize = memRequirements.size;
+        allocInfo.pNext = &vulkanExportMemoryAllocateInfoKHR;
+        allocInfo.memoryTypeIndex = findMemoryType(memRequirements.memoryTypeBits, properties);
+
+        if (vkAllocateMemory(device, &allocInfo, nullptr, &imageMemory) != VK_SUCCESS) {
+            throw std::runtime_error("failed to allocate image memory!");
+        }
+
+        vkBindImageMemory(device, image, imageMemory, 0);
+    }
+
+    void saveBmpImage(int w, int h, uint8_t* data, const char* tag)
+    {
+        FILE *f;
+        unsigned char *img = NULL;
+        int filesize = 54 + 3 * w*h;
+
+        img = (unsigned char *)malloc(3 * w*h);
+        memset(img, 0, 3 * w*h);
+
+        int x, y;
+        for (int i = 0; i < w; i++)
+        {
+            for (int j = 0; j < h; j++)
+            {
+                x = i; y = (h - 1) - j;
+                img[(x + y * w) * 3 + 2] = data[(x + y * w) * 4 + 0];
+                img[(x + y * w) * 3 + 1] = data[(x + y * w) * 4 + 1];
+                img[(x + y * w) * 3 + 0] = data[(x + y * w) * 4 + 2];
+            }
+        }
+
+        unsigned char bmpfileheader[14] = { 'B','M', 0,0,0,0, 0,0, 0,0, 54,0,0,0 };
+        unsigned char bmpinfoheader[40] = { 40,0,0,0, 0,0,0,0, 0,0,0,0, 1,0, 24,0 };
+        unsigned char bmppad[3] = { 0,0,0 };
+
+        bmpfileheader[2] = (unsigned char)(filesize);
+        bmpfileheader[3] = (unsigned char)(filesize >> 8);
+        bmpfileheader[4] = (unsigned char)(filesize >> 16);
+        bmpfileheader[5] = (unsigned char)(filesize >> 24);
+
+        bmpinfoheader[4] = (unsigned char)(w);
+        bmpinfoheader[5] = (unsigned char)(w >> 8);
+        bmpinfoheader[6] = (unsigned char)(w >> 16);
+        bmpinfoheader[7] = (unsigned char)(w >> 24);
+        bmpinfoheader[8] = (unsigned char)(h);
+        bmpinfoheader[9] = (unsigned char)(h >> 8);
+        bmpinfoheader[10] = (unsigned char)(h >> 16);
+        bmpinfoheader[11] = (unsigned char)(h >> 24);
+
+        char filename[256] = {};
+        sprintf_s(filename, "out_%s.bmp", tag);
+        f = fopen(filename, "wb");
+        fwrite(bmpfileheader, 1, 14, f);
+        fwrite(bmpinfoheader, 1, 40, f);
+        for (int i = 0; i < h; i++)
+        {
+            fwrite(img + (w*(h - i - 1) * 3), 3, w, f);
+            fwrite(bmppad, 1, (4 - (w * 3) % 4) % 4, f);
+        }
+
+        free(img);
+        fclose(f);
+    }
+
+    void shareVkImage2Dd311()
+    {
+        HRESULT hr = S_OK;
+        uint32_t width = 512;
+        uint32_t height = 512;
+        VkFormat format = VK_FORMAT_R8G8B8A8_UNORM;
+        uint32_t size = width * height * 4;
+        VkImage tmpImg;
+        VkDeviceMemory imageMem;
+
+        createSharedImage(width, height, format, tmpImg, imageMem);
+
+        //fillImage(tmpImg, format, width, height, size);
+
+        //if (0)
+        //{
+        //    void* mappedMemory = NULL;
+        //    vkRes = vkMapMemory(device, imageMem, 0, size, 0, &mappedMemory);
+        //    uint8_t* pdata = (uint8_t *)mappedMemory;
+        //    saveBmpImage(width, height, pdata, "copy");
+        //    vkUnmapMemory(device, bufferMemory);
+        //}
+
+        auto fpGetMemoryWin32HandleKHR = (PFN_vkGetMemoryWin32HandleKHR)vkGetDeviceProcAddr(device, "vkGetMemoryWin32HandleKHR");
+        //auto fpGetMemoryWin32HandleKHR = (PFN_vkGetMemoryWin32HandleKHR)vkGetInstanceProcAddr(instance, "vkGetMemoryWin32HandleKHR");
+
+        if (!fpGetMemoryWin32HandleKHR)
+        {
+            printf("ERROR: fpGetMemoryWin32HandleKHR is null! exit");
+            exit(-1);
+        }
+
+        HANDLE sharedHandle = INVALID_HANDLE_VALUE;
+        if (1)
+        {
+            VkMemoryGetWin32HandleInfoKHR getWin32HandleInfo{};
+            getWin32HandleInfo.sType = VK_STRUCTURE_TYPE_MEMORY_GET_WIN32_HANDLE_INFO_KHR;
+            getWin32HandleInfo.pNext = nullptr;
+            getWin32HandleInfo.memory = imageMem;
+            getWin32HandleInfo.handleType = handleTypeBits;
+            VK_CHECK_RESULT(fpGetMemoryWin32HandleKHR(device, &getWin32HandleInfo, &sharedHandle));
+        }
+        else
+        {
+            //sharedHandle = getSharedHandleFromD3D11Texture();
+        }
+
+        ID3D11Device *pD3D11Device = dxvactx_->d3d11Device();
+        ID3D11Device1 *pD3D11Device1 = dxvactx_->d3d11Device1();
+        ID3D11Resource* d3d11TextureFromVkImage = nullptr;
+
+        if (isKMT)
+        {
+            hr = pD3D11Device1->OpenSharedResource1(sharedHandle, __uuidof(ID3D11Resource), (void**)&d3d11TextureFromVkImage);
+        }
+        else
+        {
+            hr = pD3D11Device->OpenSharedResource(sharedHandle, __uuidof(ID3D11Resource), (void**)&d3d11TextureFromVkImage);
+        }
+        CHECK_FAIL_EXIT(hr, "OpenSharedResource");
+
+        IDXGIKeyedMutex* pKeyedMutex;
+        hr = d3d11TextureFromVkImage->QueryInterface(__uuidof(IDXGIKeyedMutex), (void**)&pKeyedMutex);
+        CHECK_FAIL_EXIT(hr, "QueryInterface IDXGIKeyedMutex");
+
+        UINT  acqKey = 1;
+        UINT  relKey = 0;
+        DWORD result = pKeyedMutex->AcquireSync(acqKey, INFINITE);
+        CHECK_FAIL_EXIT(hr, "AcquireSync");
+
+        ID3D11Texture2D* pd3d11SharedTexture = nullptr;
+        hr = d3d11TextureFromVkImage->QueryInterface(__uuidof(ID3D11Texture2D), (void**)(&pd3d11SharedTexture));
+        CHECK_FAIL_EXIT(hr, "QueryInterface ID3D11Texture2D");
+
+        return;
     }
 
     void transitionImageLayout(VkImage image, VkFormat format, VkImageLayout oldLayout, VkImageLayout newLayout) {

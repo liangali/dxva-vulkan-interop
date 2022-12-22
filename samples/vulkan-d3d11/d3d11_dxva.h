@@ -8,6 +8,7 @@
 #include <windows.h>
 #include <dxva.h>
 #include <d3d11.h>
+#include <d3d11_1.h>
 #include <dxgi1_6.h>
 
 #define CHECK_FAIL_EXIT(hr, msg) \
@@ -50,6 +51,10 @@ public:
         return pD3D11Device_;
     };
 
+    ID3D11Device1* d3d11Device1() {
+        return pD3D11Device1_;
+    };
+
     ID3D11DeviceContext* d3d11DeviceContext() {
         return pDeviceContext_;
     };
@@ -80,6 +85,7 @@ private:
     DXGI_FORMAT vppFormat_ = DXGI_FORMAT_UNKNOWN;
 
     ID3D11Device *pD3D11Device_ = nullptr;
+    ID3D11Device1 *pD3D11Device1_ = nullptr;
     ID3D11DeviceContext *pDeviceContext_ = nullptr;
     ID3D11VideoContext* pVideoContext_ = nullptr;
     ID3D11VideoDevice * pVideoDevice_ = nullptr;
